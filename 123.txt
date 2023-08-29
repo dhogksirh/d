@@ -1,0 +1,356 @@
+
+#define F_CPU 16000000UL
+#include <avr/io.h>
+#include <util/delay.h>
+#include <avr/interrupt.h>
+#include <stdio.h>
+#include "DS130.h"
+#include "UART.h"
+
+
+FILE OUTPUT = FDEV_SETUP_STREAM(UART_transmit , NULL , _FDEV_SETUP_WRITE);
+
+int main(void)
+{
+	//DS1302 RTC를 이용하여 시계와 날짜 표시
+	
+	
+	//UART 초기화
+	UART_init();
+	stdout = &OUTPUT;  // 출력 스트림 지정
+	
+	//DS1302 초기화
+	DS1302_Init();
+	
+	//RTC에 날짜 시간 설정
+	DS1302 myTime; //구조체 변수 생성
+	myTime.year = 23;
+	myTime.month = 5;
+	myTime.date = 15;
+	myTime.dayOfWeek = 1;
+	myTime.hour = 12;
+	myTime.min = 45;
+	myTime.sec = 0;
+	
+	
+	DS1302_SetTimeData(myTime);
+	
+    while (1) 
+    {
+		DS1302_GetTime(&myTime);
+		DS1302_GetData(&myTime);
+		
+		printf("20%02d. %02d. %02d. %02d:%02d:%02d \n" , myTime.year , myTime.month , myTime.date , myTime.hour , myTime.min , myTime.sec );
+		
+		_delay_ms(1000);
+		
+    }
+}
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+/*
+ * DS130.c
+ *
+ * Created: 2023-05-15 오전 9:36:24
+ *  Author: USER
+ */ 
+#include "DS130.h"
+
+void DS1302_Init()
+{
+	//클럭핀 , 데이터핀을 출력으로 설정
+	//리셋핀 low로 설정
+	DS1302_CLK_DDR |= (1<<DS1302_CLK);
+	DS1302_DATA_DDR |= (1<<DS1302_DAT);
+	DS1302_RST_DDR |= (1<<DS1302_RST);
+	
+	DS1302_CLK_PORT &= ~(1<<DS1302_CLK);   // 초기값 low
+	DS1302_DATA_PORT |= (1<<DS1302_DAT);
+	DS1302_RST_PORT &= ~(1<<DS1302_RST);   // 초기값 low
+}
+
+
+
+void DS1302_Selected()
+{
+	DS1302_RST_PORT |= (1<<DS1302_RST);   //리셋핀을 high로 설정
+	
+}
+
+void DS1302_DeSelected()
+{
+	DS1302_RST_PORT &= ~(1<<DS1302_RST); //리셋핀을 low로 설정
+}
+
+
+void DS1302_Clock()
+{
+	DS1302_CLK_PORT |= (1<<DS1302_CLK); //클럭핀 High
+	DS1302_CLK_PORT &= ~(1<<DS1302_CLK); //클럭핀 low
+}
+
+void DS1302_DataBitSet()
+{
+	DS1302_DATA_PORT |= (1<<DS1302_DAT); //데이터 핀을 high
+}
+
+void DS1302_DataBitReset()
+{
+	DS1302_DATA_PORT &= ~(1<<DS1302_DAT); //데이터 핀 reset
+}
+
+
+
+void DS1302_Change_ReadMode()
+{
+	DS1302_DATA_DDR &= ~(1<<DS1302_DAT); //읽기모드에서 핀 출력 설정 변경
+}
+
+
+
+void DS1302_Change_WriteMode()
+{
+	DS1302_DATA_DDR |= (1<<DS1302_DAT);  //쓰기모드에서 데이터핀 출력 설정 변경
+}
+
+
+uint8_t decimal_to_bcd(uint8_t decimal)  //10진 to bcd
+{
+	//변수값이    5  <- 상위4비트     9 <-하위4비트      bcd는 9까지만 나타낼 수 있어 1001이 마지막!
+	//4비트씩 묶어서 1의 자리 , 10의자리를 나눈 것 뿐
+	return (((decimal/10)<<4) | (decimal%10));
+}
+
+uint8_t bcd_to_decimal(uint8_t bcd)
+{
+	//bcd값을 10진으로 변경
+	return (((bcd>>4)*10) + (bcd&0x0f));
+}
+
+
+void DS1302_TxData(uint8_t txData)  // RTC에 데이터 전송
+{
+	//데이터를 하위비트에서 상위비트 순서로 전송한다
+	//클럭 신호를 발생시켜서 데이터를 전송한다
+	DS1302_Change_WriteMode();
+	for (int i = 0 ; i < 8 ; i++ )
+	{
+		//하위비트부터 상위비트로 1비트 출력하고 클럭 올렸다 내리고
+		if (txData & (1<<i))  //1비트씩 날아간다
+		{
+			DS1302_DataBitSet(); //1이면 실행
+		}
+		else
+		{
+			DS1302_DataBitReset();  //0이면 실행
+		}
+		
+		
+		//클럭 올렸다 내리고
+		DS1302_Clock();
+		
+	}
+}
+
+
+void DS1302_WriteData(uint8_t address , uint8_t data)
+{
+	//주소와 데이터를 전송하고 RST핀을 low로 설정한다
+	
+	
+	// rst핀을 high로 설정
+	DS1302_Selected();
+	//주소 전송하고
+	DS1302_TxData(address);
+	//데이터 값 전송
+	DS1302_TxData(decimal_to_bcd(data));
+	//CE핀 (rst) low
+	DS1302_DeSelected();
+	
+}
+
+
+void DS1302_SetTimeData(DS1302 timeData)
+{
+	DS1302_WriteData(ADDR_SEC , timeData.sec);        //address값              data 값
+	DS1302_WriteData(ADDR_MIN , timeData.min);
+	DS1302_WriteData(ADDR_HOUR , timeData.hour);
+	DS1302_WriteData(ADDR_DATE , timeData.date);
+	DS1302_WriteData(ADDR_MONTH , timeData.month);
+	DS1302_WriteData(ADDR_DAYOFWEEK , timeData.dayOfWeek);
+	DS1302_WriteData(ADDR_YEAR , timeData.year);
+	
+}
+
+uint8_t DS1302_RxData()
+{
+	//데이터를 하위비트 부터 상위비트 순으로 읽고 클럭신호를 발생시켜서 읽는다
+	uint8_t rxData = 0;
+	DS1302_Change_ReadMode();
+	
+		for (int i = 0 ; i<8;i++)
+		{
+			//if (DS1302_DATA_PIN & (1<<DS1302_DAT))
+			//{
+				//rxData |= 1<<i;
+			//}
+			//
+			//else
+			//{
+				//rxData &= ~(1<<i);
+			//}
+			rxData |= (DS1302_DATA_PIN & (1<<DS1302_DAT)) ? (1<<i) : 0;
+			if(i != 7) DS1302_Clock(); // read일때 fall 엣지가 7개
+			//i가 7이 아니면 ds1302에 클럭 신호를 보냄
+		}
+	
+	return rxData;
+}
+
+uint8_t DS1302_ReadData(uint8_t address)
+{
+	//지정 주소에서 데이터 읽기
+	uint8_t rxData = 0;  //저장 변수
+	DS1302_Selected();   //DS1302 선택
+	DS1302_TxData(address+1); 
+	rxData = DS1302_RxData(); // 수신된 데이터 읽기
+	DS1302_DeSelected();
+	return bcd_to_decimal(rxData); //bcd코드를 10진으로 변환
+	
+}
+
+
+void DS1302_GetTime(DS1302 *timeData)
+{
+	timeData ->sec = DS1302_ReadData(ADDR_SEC);
+	timeData ->min = DS1302_ReadData(ADDR_MIN);
+	timeData ->hour = DS1302_ReadData(ADDR_HOUR);
+}
+
+void DS1302_GetData(DS1302 *timeData)
+{
+	timeData->date = DS1302_ReadData(ADDR_DATE);
+	timeData->month = DS1302_ReadData(ADDR_MONTH);
+	timeData->dayOfWeek = DS1302_ReadData(ADDR_DAYOFWEEK);
+	timeData->year = DS1302_ReadData(ADDR_YEAR);
+}
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+/*
+ * DS130.h
+ *
+ * Created: 2023-05-15 오전 9:36:12
+ *  Author: USER
+ */ 
+
+
+#ifndef DS130_H_
+#define DS130_H_
+
+#include <avr/io.h>
+#define DS1302_CLK_DDR   DDRC
+#define DS1302_CLK_PORT  PORTC
+#define DS1302_DATA_DDR  DDRC
+#define DS1302_DATA_PORT PORTC
+#define DS1302_DATA_PIN  PINC
+#define DS1302_RST_DDR   DDRC
+#define DS1302_RST_PORT  PORTC
+
+#define DS1302_CLK 2
+#define DS1302_DAT 3
+#define DS1302_RST 4
+
+
+
+#define  ADDR_SEC 0x80
+#define  ADDR_MIN 0x82
+#define  ADDR_HOUR 0x84
+#define  ADDR_DATE 0x86
+#define  ADDR_MONTH 0x88
+#define  ADDR_DAYOFWEEK 0x8A
+#define  ADDR_YEAR 0x8C
+
+
+
+
+typedef struct _da1302
+{
+	uint8_t sec;
+	uint8_t min;
+	uint8_t hour;
+	uint8_t date;
+	uint8_t month;
+	uint8_t dayOfWeek;
+	uint8_t year;
+		
+}DS1302;
+
+
+void DS1302_Init();  //RTC(DS1302) 초기화 함수
+void DS1302_Selected(); // RTC 선택
+void DS1302_DeSelected(); // RTC 선택해제
+void DS1302_Clock();  // RTC에 클럭을 생성
+void DS1302_DataBitSet();  //RTC 데이터 비트를 설정
+void DS1302_DataBitReset();//RTC 데이터 비트를 해제
+void DS1302_Change_ReadMode(); //RTC 읽기 모드 변경
+void DS1302_Change_WriteMode(); //RTC 쓰기 모드 변경
+uint8_t decimal_to_bcd(uint8_t decimal);  //10진 값을 bcd로 변환
+uint8_t bcd_to_decimal(uint8_t bcd);      //bcd값을 10진 값으로 변환
+void DS1302_TxData(uint8_t txData);       //RTC에 데이터 전송
+void DS1302_WriteData(uint8_t address , uint8_t data); // RTC 특정 주소에 데이터를 씀    //  0x80  -->  0000  (0)    000    '1' <-msb (8)
+void DS1302_SetTimeData(DS1302 timeData);   //시간과 날짜 설정
+uint8_t DS1302_RxData(); // 데이터 수신
+uint8_t DS1302_ReadData(uint8_t address);   //특정 주소에서 데이터 읽음                  //  0x81  -->  1000  (1)    000    '1' (8)
+void DS1302_GetTime(DS1302 *timeData); // 시간과 날짜 가져옴
+void DS1302_GetData(DS1302 *timeData);
+
+
+//  (sec)초를 읽겠다
+//  CE핀을 High로 변경
+//  AVR의 DATA 핀을 OUTPUT 모드로 변경
+//  DS1302의 SEC주소를 전송
+//  AVR의 DATA핀을 INPUT 모드로 변경
+//  DS1302의 DATA pin 값을 읽어온다.
+
+
+
+
+#endif /* DS130_H_ */
+
+
+
+
+
+
+
+
+
+
